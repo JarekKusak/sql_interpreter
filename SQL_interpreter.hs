@@ -8,7 +8,9 @@ type Value = String -- vsechny hodnoty pro jednoduchost typu string
 type ColumnList = [ColumnName] -- sloupce v tabulce
 type Row = [Value] -- hodnoty v jednom radku
 
--- type Database = [("Students", (["ID", "Name"], [["1", "Alice"], ["2", "Bob"]]))]
+-- priklad: databaze s jednou tabulkou "People", tabulka je usporadana dvojice kde prvni slozka je nazev, 
+-- druha je taky dvojice, seznam sloupcu s nazvy a druha slozka je seznam radku - zaznamu
+-- type Database = [("People", (["ID", "Name"], [["1", "Alice"], ["2", "Bob"], ["3", "Charlie"]]))]
 type Database = [(TableName, (ColumnList, [Row]))] -- databaze obsahuje tabulky a radky
 
 data SQLStatement
@@ -73,6 +75,10 @@ parseSQL input =
             in Select columns tableName (parseJoin rest)
         _ -> error $ "Unknown command: " ++ input
 
+trim :: String -> String
+trim = f . f
+   where f = reverse . dropWhile isSpace
+
 -- Pomocná funkce pro parsování sloupců
 parseColumns :: String -> [ColumnName]
 parseColumns input = splitOn "," (trim input)  -- odstrani zavorky a rozdeli podle carek
@@ -84,10 +90,6 @@ parseValues input = splitOn "," (trim input)  -- odstrani zavorky a rozdeli podl
 parseJoin :: [String] -> Maybe Join
 parseJoin ("JOIN":table2:"ON":col1:"=":col2:_) = Just (InnerJoin table2 table2 col1 col2)
 parseJoin _ = Nothing
-
-trim :: String -> String
-trim = f . f
-   where f = reverse . dropWhile isSpace
 
 interpretSQL :: Database -> SQLStatement -> IO Database
 interpretSQL db (CreateTable name columns) = do
@@ -114,12 +116,13 @@ main = do
         case parseSQL line of
             Quit -> return () -- pokud Quit, ukonci aplikaci
             stmt -> do -- jinak:
-                db' <- interpretSQL db stmt -- updatni databazi
-                runInterpreter db'
+                db' <- interpretSQL db stmt -- zpracovava aktualni SQL prikaz (stmt) na zaklade aktualniho stavu databaze - update databaze
+                runInterpreter db' -- rekurzivni volani na novou databazi
 
 {-
 CREATE TABLE Students (ID,Name)
 INSERT INTO Students (1,Alice)
+INSERT INTO Students (2,Bobek)
 SELECT (ID,Name) FROM Students
 SELECT (ID,Name) FROM Students JOIN School ON Students.ID = School.StudentID
 -}
