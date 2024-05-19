@@ -33,9 +33,9 @@ insertInto db tableName values = trace ("Inserting into " ++ tableName ++ " valu
 select :: Database -> [ColumnName] -> TableName -> Maybe Join -> [[Value]]
 select db columns tableName Nothing =
     trace ("Selecting columns " ++ show columns ++ " from table " ++ tableName) $
-    case lookup tableName db of
-        Nothing -> error $ "Table " ++ tableName ++ " not found."
-        Just (tableCols, rows) -> 
+    case lookup tableName db of -- vyhledame pozadovanou tabulku v databazi
+        Nothing -> error $ "Table " ++ tableName ++ " not found." -- neexistuje
+        Just (tableCols, rows) ->
             let filteredRows = map (filterColumns columns tableCols) rows
             in trace ("Filtered rows: " ++ show filteredRows) filteredRows
   where
@@ -44,19 +44,6 @@ select db columns tableName Nothing =
 printResult :: [[Value]] -> IO ()
 printResult [] = putStrLn "No results found."
 printResult rows = mapM_ (putStrLn . unwords) rows
-
-main :: IO ()
-main = do
-    putStrLn "Welcome to the Haskell SQL interpreter!"
-    runInterpreter []
-  where
-    runInterpreter db = do
-        line <- getLine
-        case parseSQL line of
-            Quit -> return ()
-            stmt -> do
-                db' <- interpretSQL db stmt
-                runInterpreter db'
 
 extractParenthesizedContent :: String -> String
 extractParenthesizedContent input =
@@ -117,7 +104,47 @@ interpretSQL db Quit = do
     putStrLn "Exiting..."
     return db
 
--- Příklad: CREATE TABLE Students (ID,Name)
--- Příklad: INSERT INTO Students (1,Alice)
--- Příklad: SELECT (ID,Name) FROM Students
--- Příklad: SELECT (ID,Name) FROM Students JOIN School ON Students.ID = School.StudentID
+main :: IO ()
+main = do
+    putStrLn "Welcome to the Haskell SQL interpreter!"
+    runInterpreter [] -- zacneme s prazdnou databazi
+  where
+    runInterpreter db = do
+        line <- getLine
+        case parseSQL line of
+            Quit -> return () -- pokud Quit, ukonci aplikaci
+            stmt -> do -- jinak:
+                db' <- interpretSQL db stmt -- updatni databazi
+                runInterpreter db'
+
+{-
+CREATE TABLE Students (ID,Name)
+INSERT INTO Students (1,Alice)
+SELECT (ID,Name) FROM Students
+SELECT (ID,Name) FROM Students JOIN School ON Students.ID = School.StudentID
+-}
+
+{-
+-- Funkce pro vyhledání indexu sloupce v tabulce
+findColumnIndex :: [ColumnName] -> ColumnName -> Maybe Int
+findColumnIndex columns name = lookup name (zip columns [0..])
+
+-- Funkce pro provedení INNER JOIN
+innerJoin :: Database -> TableName -> TableName -> ColumnName -> ColumnName -> [Row]
+innerJoin db table1Name table2Name col1Name col2Name =
+    case (lookup table1Name db, lookup table2Name db) of
+        (Just (cols1, rows1), Just (cols2, rows2)) ->
+            case (findColumnIndex cols1 col1Name, findColumnIndex cols2 col2Name) of
+                (Just col1Index, Just col2Index) -> concatMap (matchRows col1Index col2Index rows2) rows1
+                _ -> []
+        _ -> []
+
+    where
+        -- Match a row from the first table with all rows from the second table
+        matchRows :: Int -> Int -> [Row] -> Row -> [Row]
+        matchRows col1Index col2Index rows2 row1 =
+            [ row1 ++ row2 | row2 <- rows2, row1 !! col1Index == row2 !! col2Index ]
+
+-- Výše uvedený kód předpokládá, že obě tabulky a sloupce pro join existují. Funkce `matchRows` zpracovává každý řádek z první tabulky a hledá odpovídající řádky ve druhé tabulce.
+-- Když nalezne shodu, spojí řádky z obou tabulek do jednoho řádku, který je přidán do výsledného seznamu.
+-}
