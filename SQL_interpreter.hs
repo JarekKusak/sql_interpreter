@@ -27,6 +27,7 @@ data Condition
 data Join
     = InnerJoin TableName TableName ColumnName ColumnName -- join na zaklade stejnych sloupcu
 
+-- pomocna funkce na orezani mezer kolem stringu
 trim :: String -> String
 trim = f . f
    where f = reverse . dropWhile isSpace
@@ -48,7 +49,7 @@ select db columns tableName conditions Nothing =
         Just (tableCols, rows) ->
             let conditionRows = maybe rows (\conds -> applyConditions tableCols conds rows) conditions
                 filteredRows = map (filterColumns columns tableCols) conditionRows
-            in trace ("Selecting with conditions: " ++ show conditions) filteredRows
+            in filteredRows
     where
         filterRows :: [ColumnName] -> [ColumnName] -> [[Value]] -> [[Value]]
         filterRows _ _ [] = []
@@ -59,11 +60,11 @@ select db columns tableName conditions Nothing =
         filterColumns _ [] _ = []
         filterColumns _ _ [] = []
         filterColumns columns (column : tableColumns) (value:rowValues)
-            | column `elem` columns = value : filterColumns columns tableColumns rowValues -- pokus je sloupec z tabulky požadovaný v SELECT, připoj jeho hodnotu do vyfiltrovaného řádku
-            | otherwise = filterColumns columns tableColumns rowValues -- jinak hledej požadované sloupečky dál
+            | column `elem` columns = value : filterColumns columns tableColumns rowValues -- pokus je sloupec z tabulky pozadovany v SELECT, pripoj jeho hodnotu do vyfiltrovaného radku
+            | otherwise = filterColumns columns tableColumns rowValues -- jinak hledej pozadovane sloupecky dal
 
 applyConditions :: [ColumnName] -> [Condition] -> [[Value]] -> [[Value]]
-applyConditions cols conditions rows = trace ("Applying conditions on columns: " ++ show cols ++ " with conditions: " ++ show conditions) $ filter (meetsAllConditions conditions cols) rows
+applyConditions cols conditions rows = filter (meetsAllConditions conditions cols) rows
 
 meetsAllConditions :: [Condition] -> [ColumnName] -> [Value] -> Bool
 meetsAllConditions conditions cols row = all (\condition -> meetsCondition condition cols row) conditions
@@ -77,20 +78,18 @@ meetsCondition cond cols row = case lookupValue cols row (conditionColumn cond) 
         LessThan _ val2 -> compareMaybeNums val val2 (<)
         GreaterThanOrEqual _ val2 -> compareMaybeNums val val2 (>=)
         LessThanOrEqual _ val2 -> compareMaybeNums val val2 (<=)
-        _ -> trace ("Condition failed to match: " ++ show cond) False
-    Nothing -> trace ("Value not found for column: " ++ show (conditionColumn cond)) False
+    Nothing -> False
 
 compareMaybeNums :: String -> String -> (Double -> Double -> Bool) -> Bool
 compareMaybeNums v1 v2 op = case (readMaybe v1 :: Maybe Double, readMaybe v2 :: Maybe Double) of
     (Just num1, Just num2) -> num1 `op` num2
-    _ -> trace ("Failed to compare numbers: " ++ v1 ++ ", " ++ v2) False
+    _ -> False
 
 lookupValue :: [ColumnName] -> [Value] -> ColumnName -> Maybe Value
 lookupValue cols row col = case lookup col (zip cols row) of
     Just val -> Just val
-    Nothing -> trace ("Column not found during lookup: " ++ col) Nothing
+    Nothing -> Nothing
 
--- Ensure conditionColumn is correctly implemented
 conditionColumn :: Condition -> ColumnName
 conditionColumn (Equals col _) = col
 conditionColumn (NotEquals col _) = col
@@ -112,33 +111,15 @@ extractParenthesizedContent input
         maybeOpenParen = dropWhile (/= '(') input
         maybeCloseParen = takeWhile (/= ')') (tail maybeOpenParen)
 
-parseSQL :: String -> SQLStatement
-parseSQL input =
-    let w = words $ map toUpper input
-    in trace ("Parsing SQL: " ++ show w) $
-        case w of
-            ("QUIT":_) -> Quit
-            ("CREATE":"TABLE":tableName:rest) ->
-                let columns = parseColumns $ extractParenthesizedContent (unwords rest)
-                in CreateTable tableName columns
-            ("INSERT":"INTO":tableName:rest) ->
-                let vals = parseValues $ extractParenthesizedContent (unwords rest)
-                in Insert tableName vals
-            "SELECT":cols:"FROM":tableName:rest ->
-                let columns = parseColumns $ extractParenthesizedContent cols
-                    conditions = parseConditions $ unwords rest
-                in Select columns tableName (Just conditions) Nothing
-            _ -> error $ "Unknown command: " ++ input
-
 parseColumns :: String -> [ColumnName]
 parseColumns input = splitOn "," (trim input)
 
 parseValues :: String -> [Value]
 parseValues input = splitOn "," (trim input)
 
-parseConditions :: String -> [Condition]
+parseConditions :: [String] -> [Condition]
 parseConditions input =
-    case words input of
+    case input of
         "WHERE":field:op:value:_ ->
             [case op of
                 "=" -> Equals field value
@@ -149,6 +130,23 @@ parseConditions input =
                 "<=" -> LessThanOrEqual field value
                 _ -> error "Unsupported operator"]
         _ -> []
+
+parseSQL :: String -> SQLStatement
+parseSQL input =
+    let w = words $ map toUpper input
+    in case w of
+            ("QUIT":_) -> Quit
+            ("CREATE":"TABLE":tableName:rest) ->
+                let columns = parseColumns $ extractParenthesizedContent (unwords rest)
+                in CreateTable tableName columns
+            ("INSERT":"INTO":tableName:rest) ->
+                let vals = parseValues $ extractParenthesizedContent (unwords rest)
+                in Insert tableName vals
+            "SELECT":cols:"FROM":tableName:rest ->
+                let columns = parseColumns $ extractParenthesizedContent cols
+                    conditions = parseConditions rest
+                in Select columns tableName (Just conditions) Nothing
+            _ -> error $ "Unknown command: " ++ input
 
 interpretSQL :: Database -> SQLStatement -> IO Database
 interpretSQL db (CreateTable name columns) = do
@@ -175,9 +173,10 @@ main = do
         case parseSQL line of
             Quit -> return ()
             stmt -> do
-                db' <- interpretSQL db stmt
-                runInterpreter db'
+                db' <- interpretSQL db stmt -- updatujeme databazi
+                runInterpreter db' -- pokracujeme dalsi iteraci s novou databazi
 
+-- zatim pouze hruby navrh joinu...
 parseJoin :: [String] -> Maybe Join
 parseJoin ("JOIN":table2:"ON":col1:"=":col2:_) = Just (InnerJoin table2 table2 col1 col2)
 parseJoin _ = Nothing
@@ -195,4 +194,6 @@ INSERT INTO Students (1, Alice, 22)
 INSERT INTO Students (2, Bob, 19)
 INSERT INTO Students (3, Charlie, 25)
 SELECT (ID,Name) FROM Students WHERE Age > 20
+
+SELECT (ID) FROM Students WHERE Name = Alice
 -}
