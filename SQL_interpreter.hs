@@ -117,11 +117,18 @@ parseColumns input = splitOn "," (trim input)
 parseValues :: String -> [Value]
 parseValues input = splitOn "," (trim input)
 
+extractStringValue :: String -> String
+extractStringValue s = 
+    if head s == '\'' && last s == '\'' 
+    then tail (init s)  -- Remove the first and last character (the quotes)
+    else s
+
 parseConditions :: [String] -> [Condition]
 parseConditions input =
     case input of
-        "WHERE":field:op:value:_ ->
-            [case op of
+        "WHERE":field:op:rest -> 
+            let value = extractStringValue $ unwords rest
+            in [case op of
                 "=" -> Equals field value
                 "!=" -> NotEquals field value
                 ">" -> GreaterThan field value
@@ -189,11 +196,10 @@ INSERT INTO Students (2,Bobek)
 SELECT (ID,Name) FROM Students
 (join zatim nemam...) SELECT (ID,Name) FROM Students JOIN School ON Students.ID = School.StudentID
 
-CREATE TABLE Students (ID,Name,Age)
-INSERT INTO Students (1, Alice, 22)
-INSERT INTO Students (2, Bob, 19)
-INSERT INTO Students (3, Charlie, 25)
-SELECT (ID,Name) FROM Students WHERE Age > 20
-
-SELECT (ID) FROM Students WHERE Name = Alice
+CREATE TABLE StudentsWithAge (ID,Name,Age)
+INSERT INTO StudentsWithAge (1,Alice,22)
+INSERT INTO StudentsWithAge (2,Bob,19)
+INSERT INTO StudentsWithAge (3,Charlie,25)
+SELECT (ID,Name) FROM StudentsWithAge WHERE Age > 20
+SELECT (ID) FROM StudentsWithAge WHERE Name = 'Alice'
 -}
