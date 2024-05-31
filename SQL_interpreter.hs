@@ -1,22 +1,28 @@
-import Debug.Trace (trace)
 import Data.List.Split (splitOn)
 import Data.Char (isSpace, toUpper)
+import Debug.Trace (trace)
+import Text.Read (readMaybe)
 
 type TableName = String
 type ColumnName = String
 type Value = String -- vsechny hodnoty pro jednoduchost typu string
 type ColumnList = [ColumnName] -- sloupce v tabulce
 type Row = [Value] -- hodnoty v jednom radku
-
--- priklad: databaze s jednou tabulkou "People", tabulka je usporadana dvojice kde prvni slozka je nazev, 
--- druha je taky dvojice, seznam sloupcu s nazvy a druha slozka je seznam radku - zaznamu
--- type Database = [("People", (["ID", "Name"], [["1", "Alice"], ["2", "Bob"], ["3", "Charlie"]]))]
 type Database = [(TableName, (ColumnList, [Row]))] -- databaze obsahuje tabulky a radky
+
 data SQLStatement
     = CreateTable TableName [ColumnName]
     | Insert TableName [Value]
-    | Select [ColumnName] TableName (Maybe Join)
-    | Quit -- ukonceni interpretu
+    | Select [ColumnName] TableName (Maybe [Condition]) (Maybe Join)
+    | Quit
+data Condition
+    = Equals ColumnName Value
+    | NotEquals ColumnName Value
+    | GreaterThan ColumnName Value
+    | LessThan ColumnName Value
+    | GreaterThanOrEqual ColumnName Value
+    | LessThanOrEqual ColumnName Value
+    deriving Show
 
 data Join
     = InnerJoin TableName TableName ColumnName ColumnName -- join na zaklade stejnych sloupcu
@@ -26,41 +32,23 @@ trim = f . f
    where f = reverse . dropWhile isSpace
 
 createTable :: Database -> TableName -> [ColumnName] -> Database
-createTable db name columns = trace ("Creating table " ++ name ++ " with columns " ++ show columns) $ (name, (columns, [])) : db -- pripoji se k existujicim tabulkam
+createTable db name columns = (name, (columns, [])) : db
 
 insertInto :: Database -> TableName -> [Value] -> Database
-insertInto db tableName values = trace ("Inserting into " ++ tableName ++ " values " ++ show values) $ map updateTable db -- map vyuzivam v podstate k iteraci
+insertInto db tableName values = map updateTable db
   where
     updateTable (name, (columns, rows))
-      | name == tableName = (name, (columns, values : rows)) -- prida novy radek (zaznam) do pozadovane tabulky
-      | otherwise = (name, (columns, rows)) -- ostatni tabulky nech nezmenene
+      | name == tableName = (name, (columns, values : rows))
+      | otherwise = (name, (columns, rows))
 
-{-
-select :: Database -> [ColumnName] -> TableName -> Maybe Join -> [[Value]]
-select db columns tableName Nothing =
-    trace ("Selecting columns " ++ show columns ++ " from table " ++ tableName) $
-    case lookup tableName db of -- vyhledame pozadovanou tabulku v databazi (lookup vrací pro daný klíč - tableName - hodnotu - tabulku (ColumnList, [Row]))
-        Nothing -> error $ "Table " ++ tableName ++ " not found." -- neexistuje
-        Just (tableCols, rows) ->
-            let filteredRows = map (filterColumns columns tableCols) rows
-            in trace ("Filtered rows: " ++ show filteredRows) filteredRows
-  where
-    filterColumns cols tableCols row = [value | (col, value) <- zip tableCols row, col `elem` cols]
-
-
-zip ["id", "name", "age", "email"] [1, "John Doe", 30, "john@example.com"] 
-se stane [("id", 1), ("name", "John Doe"), ("age", 30), ("email", "john@example.com")].
-
-filterColumns tedy prochází každý řádek tabulky a vybírá pouze ty hodnoty, které odpovídají požadovaným sloupcům
-filterRows v postatě aplikuje filterColumns na všechny řádky
--}
-
-select :: Database -> [ColumnName] -> TableName -> Maybe Join -> [[Value]]
-select db columns tableName Nothing = -- columns jsou požadované sloupečky
+select :: Database -> [ColumnName] -> TableName -> Maybe [Condition] -> Maybe Join -> [[Value]]
+select db columns tableName conditions Nothing =
     case lookup tableName db of
-        Nothing -> error "error"
-        Just (tableColumns, rows) ->
-            filterRows columns tableColumns rows -- vrátí se vyfiltrované řádky s požadovanými sloupci
+        Nothing -> error $ "Table " ++ tableName ++ " not found."
+        Just (tableCols, rows) ->
+            let conditionRows = maybe rows (\conds -> applyConditions tableCols conds rows) conditions
+                filteredRows = map (filterColumns columns tableCols) conditionRows
+            in trace ("Selecting with conditions: " ++ show conditions) filteredRows
     where
         filterRows :: [ColumnName] -> [ColumnName] -> [[Value]] -> [[Value]]
         filterRows _ _ [] = []
@@ -73,6 +61,43 @@ select db columns tableName Nothing = -- columns jsou požadované sloupečky
         filterColumns columns (column : tableColumns) (value:rowValues)
             | column `elem` columns = value : filterColumns columns tableColumns rowValues -- pokus je sloupec z tabulky požadovaný v SELECT, připoj jeho hodnotu do vyfiltrovaného řádku
             | otherwise = filterColumns columns tableColumns rowValues -- jinak hledej požadované sloupečky dál
+
+applyConditions :: [ColumnName] -> [Condition] -> [[Value]] -> [[Value]]
+applyConditions cols conditions rows = trace ("Applying conditions on columns: " ++ show cols ++ " with conditions: " ++ show conditions) $ filter (meetsAllConditions conditions cols) rows
+
+meetsAllConditions :: [Condition] -> [ColumnName] -> [Value] -> Bool
+meetsAllConditions conditions cols row = all (\condition -> meetsCondition condition cols row) conditions
+
+meetsCondition :: Condition -> [ColumnName] -> [Value] -> Bool
+meetsCondition cond cols row = case lookupValue cols row (conditionColumn cond) of
+    Just val -> case cond of
+        Equals _ val2 -> val == val2
+        NotEquals _ val2 -> val /= val2
+        GreaterThan _ val2 -> compareMaybeNums val val2 (>)
+        LessThan _ val2 -> compareMaybeNums val val2 (<)
+        GreaterThanOrEqual _ val2 -> compareMaybeNums val val2 (>=)
+        LessThanOrEqual _ val2 -> compareMaybeNums val val2 (<=)
+        _ -> trace ("Condition failed to match: " ++ show cond) False
+    Nothing -> trace ("Value not found for column: " ++ show (conditionColumn cond)) False
+
+compareMaybeNums :: String -> String -> (Double -> Double -> Bool) -> Bool
+compareMaybeNums v1 v2 op = case (readMaybe v1 :: Maybe Double, readMaybe v2 :: Maybe Double) of
+    (Just num1, Just num2) -> num1 `op` num2
+    _ -> trace ("Failed to compare numbers: " ++ v1 ++ ", " ++ v2) False
+
+lookupValue :: [ColumnName] -> [Value] -> ColumnName -> Maybe Value
+lookupValue cols row col = case lookup col (zip cols row) of
+    Just val -> Just val
+    Nothing -> trace ("Column not found during lookup: " ++ col) Nothing
+
+-- Ensure conditionColumn is correctly implemented
+conditionColumn :: Condition -> ColumnName
+conditionColumn (Equals col _) = col
+conditionColumn (NotEquals col _) = col
+conditionColumn (GreaterThan col _) = col
+conditionColumn (LessThan col _) = col
+conditionColumn (GreaterThanOrEqual col _) = col
+conditionColumn (LessThanOrEqual col _) = col
 
 printResult :: [[Value]] -> IO ()
 printResult [] = putStrLn "No results found."
@@ -88,33 +113,42 @@ extractParenthesizedContent input
         maybeCloseParen = takeWhile (/= ')') (tail maybeOpenParen)
 
 parseSQL :: String -> SQLStatement
-parseSQL input = 
+parseSQL input =
     let w = words $ map toUpper input
-    in case w of
-        ("QUIT":_) ->
-            Quit
-        ("CREATE":"TABLE":tableName:rest) ->
-            let columns = parseColumns $ extractParenthesizedContent (unwords rest)
-            in CreateTable tableName columns
-        ("INSERT":"INTO":tableName:rest) ->
-            let vals = parseValues $ extractParenthesizedContent (unwords rest)
-            in Insert tableName vals
-        ("SELECT":cols:"FROM":tableName:rest) ->
-            let columns = parseColumns $ extractParenthesizedContent cols
-            in Select columns tableName (parseJoin rest)
-        _ -> error $ "Unknown command: " ++ input
+    in trace ("Parsing SQL: " ++ show w) $
+        case w of
+            ("QUIT":_) -> Quit
+            ("CREATE":"TABLE":tableName:rest) ->
+                let columns = parseColumns $ extractParenthesizedContent (unwords rest)
+                in CreateTable tableName columns
+            ("INSERT":"INTO":tableName:rest) ->
+                let vals = parseValues $ extractParenthesizedContent (unwords rest)
+                in Insert tableName vals
+            "SELECT":cols:"FROM":tableName:rest ->
+                let columns = parseColumns $ extractParenthesizedContent cols
+                    conditions = parseConditions $ unwords rest
+                in Select columns tableName (Just conditions) Nothing
+            _ -> error $ "Unknown command: " ++ input
 
--- Pomocná funkce pro parsování sloupců
 parseColumns :: String -> [ColumnName]
-parseColumns input = splitOn "," (trim input)  -- odstrani zavorky a rozdeli podle carek
+parseColumns input = splitOn "," (trim input)
 
--- Pomocná funkce pro parsování hodnot
 parseValues :: String -> [Value]
-parseValues input = splitOn "," (trim input)  -- odstrani zavorky a rozdeli podle carek
+parseValues input = splitOn "," (trim input)
 
-parseJoin :: [String] -> Maybe Join
-parseJoin ("JOIN":table2:"ON":col1:"=":col2:_) = Just (InnerJoin table2 table2 col1 col2)
-parseJoin _ = Nothing
+parseConditions :: String -> [Condition]
+parseConditions input =
+    case words input of
+        "WHERE":field:op:value:_ ->
+            [case op of
+                "=" -> Equals field value
+                "!=" -> NotEquals field value
+                ">" -> GreaterThan field value
+                "<" -> LessThan field value
+                ">=" -> GreaterThanOrEqual field value
+                "<=" -> LessThanOrEqual field value
+                _ -> error "Unsupported operator"]
+        _ -> []
 
 interpretSQL :: Database -> SQLStatement -> IO Database
 interpretSQL db (CreateTable name columns) = do
@@ -123,8 +157,8 @@ interpretSQL db (CreateTable name columns) = do
 interpretSQL db (Insert tableName values) = do
     putStrLn "Data inserted."
     return $ insertInto db tableName values
-interpretSQL db (Select columns tableName Nothing) = do
-    let result = select db columns tableName Nothing
+interpretSQL db (Select columns tableName conditions join) = do
+    let result = select db columns tableName conditions join
     printResult result
     return db
 interpretSQL db Quit = do
@@ -139,40 +173,26 @@ main = do
     runInterpreter db = do
         line <- getLine
         case parseSQL line of
-            Quit -> return () -- pokud Quit, ukonci aplikaci
-            stmt -> do -- jinak:
-                db' <- interpretSQL db stmt -- zpracovava aktualni SQL prikaz (stmt) na zaklade aktualniho stavu databaze - update databaze
-                runInterpreter db' -- rekurzivni volani na novou databazi
+            Quit -> return ()
+            stmt -> do
+                db' <- interpretSQL db stmt
+                runInterpreter db'
+
+parseJoin :: [String] -> Maybe Join
+parseJoin ("JOIN":table2:"ON":col1:"=":col2:_) = Just (InnerJoin table2 table2 col1 col2)
+parseJoin _ = Nothing
 
 {-
+main
 CREATE TABLE Students (ID,Name)
 INSERT INTO Students (1,Alice)
 INSERT INTO Students (2,Bobek)
 SELECT (ID,Name) FROM Students
-SELECT (ID,Name) FROM Students JOIN School ON Students.ID = School.StudentID
--}
+(join zatim nemam...) SELECT (ID,Name) FROM Students JOIN School ON Students.ID = School.StudentID
 
-{-
--- Funkce pro vyhledání indexu sloupce v tabulce
-findColumnIndex :: [ColumnName] -> ColumnName -> Maybe Int
-findColumnIndex columns name = lookup name (zip columns [0..])
-
--- Funkce pro provedení INNER JOIN
-innerJoin :: Database -> TableName -> TableName -> ColumnName -> ColumnName -> [Row]
-innerJoin db table1Name table2Name col1Name col2Name =
-    case (lookup table1Name db, lookup table2Name db) of
-        (Just (cols1, rows1), Just (cols2, rows2)) ->
-            case (findColumnIndex cols1 col1Name, findColumnIndex cols2 col2Name) of
-                (Just col1Index, Just col2Index) -> concatMap (matchRows col1Index col2Index rows2) rows1
-                _ -> []
-        _ -> []
-
-    where
-        -- Match a row from the first table with all rows from the second table
-        matchRows :: Int -> Int -> [Row] -> Row -> [Row]
-        matchRows col1Index col2Index rows2 row1 =
-            [ row1 ++ row2 | row2 <- rows2, row1 !! col1Index == row2 !! col2Index ]
-
--- Výše uvedený kód předpokládá, že obě tabulky a sloupce pro join existují. Funkce `matchRows` zpracovává každý řádek z první tabulky a hledá odpovídající řádky ve druhé tabulce.
--- Když nalezne shodu, spojí řádky z obou tabulek do jednoho řádku, který je přidán do výsledného seznamu.
+CREATE TABLE Students (ID,Name,Age)
+INSERT INTO Students (1, Alice, 22)
+INSERT INTO Students (2, Bob, 19)
+INSERT INTO Students (3, Charlie, 25)
+SELECT (ID,Name) FROM Students WHERE Age > 20
 -}
