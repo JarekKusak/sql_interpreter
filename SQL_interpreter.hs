@@ -8,6 +8,10 @@ type ColumnName = String
 type Value = String -- vsechny hodnoty pro jednoduchost typu string
 type ColumnList = [ColumnName] -- sloupce v tabulce
 type Row = [Value] -- hodnoty v jednom radku
+
+-- priklad: databaze s jednou tabulkou "People", tabulka je usporadana dvojice kde prvni slozka je nazev, 
+-- druha je taky dvojice, seznam sloupcu s nazvy a druha slozka je seznam radku - zaznamu
+-- type Database = [("People", (["ID", "Name"], [["1", "Alice"], ["2", "Bob"], ["3", "Charlie"]]))]
 type Database = [(TableName, (ColumnList, [Row]))] -- databaze obsahuje tabulky a radky
 
 data SQLStatement
@@ -44,34 +48,38 @@ insertInto db tableName values = map updateTable db
 
 select :: Database -> [ColumnName] -> TableName -> Maybe [Condition] -> Maybe Join -> [[Value]]
 select db columns tableName conditions Nothing =
-    case lookup tableName db of
+    case lookup tableName db of -- vyhledej pozadovanou tabulku
         Nothing -> error $ "Table " ++ tableName ++ " not found."
         Just (tableCols, rows) ->
-            let conditionRows = maybe rows (\conds -> applyConditions tableCols conds rows) conditions
+            -- pokud jsou poskytnute podminky, aplikuj je na vyfiltrovane radky, jinak pouzij vsechny radky
+            let conditionRows = maybe rows (\conds -> applyConditions tableCols conds rows) conditions -- aplikace conditions na kazdy radek -> vraci pouze radky splnujici vsechny podminky
+                -- vyfiltruj radky tak, aby zustaly pouze pozadovane sloupce
                 filteredRows = map (filterColumns columns tableCols) conditionRows
             in filteredRows
     where
+        -- postupne filtruj vsechny radky pouze na pozadovane atributy
         filterRows :: [ColumnName] -> [ColumnName] -> [[Value]] -> [[Value]]
         filterRows _ _ [] = []
         filterRows columns tableColumns (r:rs) = filteredRow : filterRows columns tableColumns rs
             where filteredRow = filterColumns columns tableColumns r
         
+        -- vyfiltruj jeden radek na pozadovane sloupce
         filterColumns :: [ColumnName] -> [ColumnName] -> [Value] -> [Value]
         filterColumns _ [] _ = []
         filterColumns _ _ [] = []
         filterColumns columns (column : tableColumns) (value:rowValues)
-            | column `elem` columns = value : filterColumns columns tableColumns rowValues -- pokus je sloupec z tabulky pozadovany v SELECT, pripoj jeho hodnotu do vyfiltrovaného radku
+            | column `elem` columns = value : filterColumns columns tableColumns rowValues -- pokus je sloupec z tabulky pozadovany v SELECT, pripoj jeho hodnotu do vyfiltrovaneho radku
             | otherwise = filterColumns columns tableColumns rowValues -- jinak hledej pozadovane sloupecky dal
 
 applyConditions :: [ColumnName] -> [Condition] -> [[Value]] -> [[Value]]
-applyConditions cols conditions rows = filter (meetsAllConditions conditions cols) rows
+applyConditions cols conditions rows = filter (meetsAllConditions conditions cols) rows -- aplikace podminek na kazdy jeden radek
 
-meetsAllConditions :: [Condition] -> [ColumnName] -> [Value] -> Bool
+meetsAllConditions :: [Condition] -> [ColumnName] -> [Value] -> Bool -- vraci bool, kdyz radek splnuje vsechny podminky
 meetsAllConditions conditions cols row = all (\condition -> meetsCondition condition cols row) conditions
 
 meetsCondition :: Condition -> [ColumnName] -> [Value] -> Bool
 meetsCondition cond cols row = case lookupValue cols row (conditionColumn cond) of
-    Just val -> case cond of
+    Just val -> case cond of -- pokud hodnota vracena lookupValue existuje, porovna ji s hodnotou definovanou v podmince
         Equals _ val2 -> val == val2
         NotEquals _ val2 -> val /= val2
         GreaterThan _ val2 -> compareMaybeNums val val2 (>)
@@ -85,6 +93,7 @@ compareMaybeNums v1 v2 op = case (readMaybe v1 :: Maybe Double, readMaybe v2 :: 
     (Just num1, Just num2) -> num1 `op` num2
     _ -> False
 
+-- pomocna funkce na nalezeni hodnoty v radku zalozenou na nazvu sloupce definovanem v podmince
 lookupValue :: [ColumnName] -> [Value] -> ColumnName -> Maybe Value
 lookupValue cols row col = case lookup col (zip cols row) of
     Just val -> Just val
@@ -102,6 +111,7 @@ printResult :: [[Value]] -> IO ()
 printResult [] = putStrLn "No results found."
 printResult rows = mapM_ (putStrLn . unwords) rows
 
+-- pomocna funkce na extrahovani vstupu ze zavorek
 extractParenthesizedContent :: String -> String
 extractParenthesizedContent input
     | null maybeOpenParen = error $ "No opening parenthesis found in input: " ++ input
@@ -120,7 +130,7 @@ parseValues input = splitOn "," (trim input)
 extractStringValue :: String -> String
 extractStringValue s = 
     if head s == '\'' && last s == '\'' 
-    then tail (init s)  -- Remove the first and last character (the quotes)
+    then tail (init s)  -- odstraneni zavorek ze stringu
     else s
 
 parseConditions :: [String] -> [Condition]
@@ -136,7 +146,7 @@ parseConditions input =
                 ">=" -> GreaterThanOrEqual field value
                 "<=" -> LessThanOrEqual field value
                 _ -> error "Unsupported operator"]
-        _ -> []
+        _ -> [] -- nejsou definované podmínky
 
 parseSQL :: String -> SQLStatement
 parseSQL input =
